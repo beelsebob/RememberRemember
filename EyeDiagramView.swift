@@ -175,13 +175,17 @@ public final class EyeDiagramView: NSView {
 
     private func densityImage(width: Int, height: Int, scale: CGFloat,
                               magnitude: Double, xMin: Double, xMax: Double) -> CGImage? {
-        var grayscale = [UInt8](repeating: 0, count: width * height)
+        // Accumulated in floating point: at 1/n opacity an 8-bit buffer rounds each stroke of a
+        // capture with more than ~500 traces (such as an adversarial eye) to zero, leaving it blank.
+        var accumulated = [Float](repeating: 0, count: width * height)
 
         let graySpace = CGColorSpaceCreateDeviceGray()
-        guard let grayContext = CGContext(data: &grayscale, width: width, height: height,
-                                          bitsPerComponent: 8, bytesPerRow: width,
+        guard let grayContext = CGContext(data: &accumulated, width: width, height: height,
+                                          bitsPerComponent: 32, bytesPerRow: width * MemoryLayout<Float>.size,
                                           space: graySpace,
-                                          bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+                                          bitmapInfo: CGImageAlphaInfo.none.rawValue |
+                                              CGBitmapInfo.floatComponents.rawValue |
+                                              CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
         grayContext.setShouldAntialias(true)
         grayContext.setAllowsAntialiasing(true)
         grayContext.setLineWidth(3 * scale)
@@ -215,8 +219,10 @@ public final class EyeDiagramView: NSView {
         // only a small part of the byte range. Stretch the completed density image to 0...1 before
         // applying the colour ramp so the strongest path always reaches the top of the palette,
         // while preserving every lesser path's density relative to it.
-        let peakDensity = grayscale.max() ?? 0
-        let densityScale = peakDensity > 0 ? 1 / Float(peakDensity) : 0
+        let peakDensity = accumulated.max() ?? 0
+        let normalization = peakDensity > 0 ? 255 / peakDensity : 0
+        let grayscale = accumulated.map { UInt8(min(max($0 * normalization, 0), 255).rounded()) }
+        let densityScale: Float = 1 / 255
         var rgba = EyeDensityColorizer.shared?.colorize(grayscale, densityScale: densityScale)
             ?? Self.colorizeOnCPU(grayscale, densityScale: densityScale)
         let rgbSpace = CGColorSpaceCreateDeviceRGB()
