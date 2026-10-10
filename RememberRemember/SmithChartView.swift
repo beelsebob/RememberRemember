@@ -23,16 +23,31 @@ public final class SmithChartView: NSView {
     private static let legendHeight: CGFloat = 24
     private static let plotLegendGap: CGFloat = 8
 
+    /// The containing results stack determines our width; layout() derives the height from it so
+    /// the Smith circle consumes that full width while retaining room for the legend above it.
+    /// Deliberately a plain constant rather than a height == width constraint: that ties every
+    /// stacked view's vertical position to the stack's width, making the Auto Layout engine's rows
+    /// dense, so adding or removing a page of ~100 Smith charts took seconds to minutes.
+    private var heightConstraint: NSLayoutConstraint!
+
+    private static func height(forWidth width: CGFloat) -> CGFloat {
+        let verticalDecoration = bottomInset + legendHeight + plotLegendGap
+        return max(verticalDecoration, width + verticalDecoration - sideInset * 2)
+    }
+
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
-        // The containing results stack determines our width. Derive the height from it so the
-        // Smith circle consumes that full width while retaining room for the legend above it.
-        let verticalDecoration = Self.bottomInset + Self.legendHeight + Self.plotLegendGap
-        heightAnchor.constraint(
-            equalTo: widthAnchor,
-            constant: verticalDecoration - Self.sideInset * 2
-        ).isActive = true
+        heightConstraint = heightAnchor.constraint(equalToConstant: Self.height(forWidth: max(frameRect.width, 400)))
+        heightConstraint.isActive = true
+    }
+
+    public override func layout() {
+        super.layout()
+        let height = Self.height(forWidth: bounds.width)
+        if heightConstraint.constant != height {
+            heightConstraint.constant = height
+        }
     }
 
     public convenience init() {
