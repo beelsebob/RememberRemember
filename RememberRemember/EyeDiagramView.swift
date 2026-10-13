@@ -38,6 +38,23 @@ public enum EnergyColorMap {
     }
 }
 
+/// An eye mask drawn over an EyeDiagramView's traces, in the chart's own units (unit intervals
+/// across, volts up).
+public struct EyeDiagramMask {
+    /// The keep-out region's outline; empty for none.
+    public var keepOut: [CGPoint]
+    /// The band the signal must stay within; nil for no limit.
+    public var limits: ClosedRange<Double>?
+    /// Draws the mask in red, as failed, rather than in a neutral tint.
+    public var violated: Bool
+
+    public init(keepOut: [CGPoint], limits: ClosedRange<Double>?, violated: Bool) {
+        self.keepOut = keepOut
+        self.limits = limits
+        self.violated = violated
+    }
+}
+
 /// Dense two-unit-interval eye plot. Every received bit slice is drawn on the same axis with a
 /// translucent stroke; crossings and the open eye emerge from the accumulated traces rather than
 /// from a precomputed envelope.
@@ -46,6 +63,9 @@ public final class EyeDiagramView: NSView {
     private var traces: [[Double]] = []
     /// Symmetric y extent of the traces; nil when there is no finite sample. Computed once per
     /// setData rather than rescanning every sample on each draw.
+    private var traceMagnitude: Double?
+    private var mask: EyeDiagramMask?
+    /// The plot's symmetric y extent: the traces' and the mask's, with a little headroom.
     private var magnitude: Double?
     /// The rendered density image and the pixel size it was rendered at. Rasterizing every trace is
     /// by far the most expensive part of drawing, so it is only redone when the data changes or the
@@ -78,9 +98,38 @@ public final class EyeDiagramView: NSView {
                 rawMax = max(rawMax, value)
             }
         }
-        magnitude = rawMin <= rawMax ? max(abs(rawMin), abs(rawMax), 1e-12) * 1.08 : nil
+        traceMagnitude = rawMin <= rawMax ? max(abs(rawMin), abs(rawMax), 1e-12) : nil
+        updateMagnitude()
         cachedDensity = nil
         needsDisplay = true
+    }
+
+    /// Overlays `mask` on the traces (nil removes it), widening the plot to show all of it.
+    public func setMask(_ mask: EyeDiagramMask?) {
+        self.mask = mask
+        let previous = magnitude
+        updateMagnitude()
+        if magnitude != previous {
+            cachedDensity = nil
+        }
+        needsDisplay = true
+    }
+
+    private func updateMagnitude() {
+        guard let traceMagnitude else {
+            magnitude = nil
+            return
+        }
+        var extent = traceMagnitude
+        if let mask {
+            for point in mask.keepOut {
+                extent = max(extent, abs(Double(point.y)))
+            }
+            if let limits = mask.limits {
+                extent = max(extent, abs(limits.lowerBound), abs(limits.upperBound))
+            }
+        }
+        magnitude = extent * 1.08
     }
 
     public override func viewDidChangeBackingProperties() {
@@ -129,6 +178,32 @@ public final class EyeDiagramView: NSView {
             context.addLine(to: CGPoint(x: plot.maxX, y: p.y))
         }
         context.strokePath()
+
+        if let mask {
+            let tint = mask.violated ? NSColor.systemRed : NSColor.labelColor
+            context.setFillColor(tint.withAlphaComponent(mask.violated ? 0.28 : 0.16).cgColor)
+            context.setStrokeColor(tint.withAlphaComponent(0.85).cgColor)
+            context.setLineWidth(1)
+            if let limits = mask.limits {
+                let upper = point(x: xMin, y: limits.upperBound).y
+                let lower = point(x: xMin, y: limits.lowerBound).y
+                context.fill(CGRect(x: plot.minX, y: upper, width: plot.width, height: max(0, plot.maxY - upper)))
+                context.fill(CGRect(x: plot.minX, y: plot.minY, width: plot.width, height: max(0, lower - plot.minY)))
+                for y in [upper, lower] {
+                    context.move(to: CGPoint(x: plot.minX, y: y))
+                    context.addLine(to: CGPoint(x: plot.maxX, y: y))
+                }
+                context.strokePath()
+            }
+            if let first = mask.keepOut.first {
+                context.move(to: point(x: Double(first.x), y: Double(first.y)))
+                for vertex in mask.keepOut.dropFirst() {
+                    context.addLine(to: point(x: Double(vertex.x), y: Double(vertex.y)))
+                }
+                context.closePath()
+                context.drawPath(using: .fillStroke)
+            }
+        }
 
         context.restoreGState()
 
