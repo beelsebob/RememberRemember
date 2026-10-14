@@ -129,6 +129,11 @@ public final class LineChartView: NSView {
     /// Kept by curve index so live `setData` updates retain the user's legend choices without
     /// coupling visibility to the curve's display label.
     private var disabledCurveIndices: Set<Int> = []
+    /// Draws the curve at this index after every other curve, so it sits on top; its
+    /// colour and legend position stay those of its index.
+    public var drawnLastCurveIndex: Int? {
+        didSet { needsDisplay = true }
+    }
     private var trackingArea: NSTrackingArea?
     private var hoverLocation: CGPoint?
 
@@ -532,7 +537,12 @@ public final class LineChartView: NSView {
         }
 
         let palette = ChartPalette.colors
-        for (index, curve) in curves.enumerated() {
+        var drawingOrder = Array(curves.indices)
+        if let last = drawnLastCurveIndex, let position = drawingOrder.firstIndex(of: last) {
+            drawingOrder.append(drawingOrder.remove(at: position))
+        }
+        for index in drawingOrder {
+            let curve = curves[index]
             guard !disabledCurveIndices.contains(index) else { continue }
             let range = curve.axis == .left ? leftRange : rightRange
             let path = CGMutablePath()

@@ -38,6 +38,32 @@ public enum EnergyColorMap {
     }
 }
 
+/// A light-to-dark blue density ramp for eyes that will be printed: on white paper the sparse
+/// traces stay pale and the dense ones darkest, so ink tracks density and nothing is lost to a
+/// bright colour on a white page.
+public enum PrintDensityColorMap {
+    private static let stops: [(t: CGFloat, red: CGFloat, green: CGFloat, blue: CGFloat)] = [
+        (0.0, 0x9e / 255, 0xca / 255, 0xe1 / 255),
+        (0.35, 0x42 / 255, 0x92 / 255, 0xc6 / 255),
+        (0.7, 0x08 / 255, 0x51 / 255, 0x9c / 255),
+        (1.0, 0x08 / 255, 0x1d / 255, 0x58 / 255),
+    ]
+
+    /// The same opacity ramp as EnergyColorMap.rgba(at:).
+    public static func rgba(at value: CGFloat) -> (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
+        let clamped = min(max(value, 0), 1)
+        let upperIndex = stops.firstIndex { $0.t >= clamped } ?? stops.count - 1
+        let upper = stops[upperIndex]
+        let lower = stops[max(upperIndex - 1, 0)]
+        let span = upper.t - lower.t
+        let fraction = span > 0 ? (clamped - lower.t) / span : 0
+        return (lower.red + (upper.red - lower.red) * fraction,
+                lower.green + (upper.green - lower.green) * fraction,
+                lower.blue + (upper.blue - lower.blue) * fraction,
+                min(max(value / 0.25, 0), 1))
+    }
+}
+
 /// An eye mask drawn over an EyeDiagramView's traces, in the chart's own units (unit intervals
 /// across, volts up).
 public struct EyeDiagramMask {
@@ -71,6 +97,13 @@ public final class EyeDiagramView: NSView {
     /// by far the most expensive part of drawing, so it is only redone when the data changes or the
     /// plot's pixel dimensions do (resize or a move to a display with a different backing scale).
     private var cachedDensity: (image: CGImage, width: Int, height: Int)?
+    /// Colours the density with PrintDensityColorMap rather than EnergyColorMap.
+    public var usesPrintColors = false {
+        didSet {
+            cachedDensity = nil
+            needsDisplay = true
+        }
+    }
 
     public override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -298,8 +331,10 @@ public final class EyeDiagramView: NSView {
         let normalization = peakDensity > 0 ? 255 / peakDensity : 0
         let grayscale = accumulated.map { UInt8(min(max($0 * normalization, 0), 255).rounded()) }
         let densityScale: Float = 1 / 255
-        var rgba = EyeDensityColorizer.shared?.colorize(grayscale, densityScale: densityScale)
-            ?? Self.colorizeOnCPU(grayscale, densityScale: densityScale)
+        var rgba = usesPrintColors
+            ? Self.colorizeOnCPU(grayscale, densityScale: densityScale, colorMap: PrintDensityColorMap.rgba)
+            : EyeDensityColorizer.shared?.colorize(grayscale, densityScale: densityScale)
+                ?? Self.colorizeOnCPU(grayscale, densityScale: densityScale, colorMap: EnergyColorMap.rgba)
         let rgbSpace = CGColorSpaceCreateDeviceRGB()
         guard let colorContext = CGContext(data: &rgba, width: width, height: height,
                                            bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -310,17 +345,28 @@ public final class EyeDiagramView: NSView {
 
     /// Fallback for when no Metal device is available; produces the same premultiplied RGBA8 as
     /// EyeDensityColorize.metal.
-    private static func colorizeOnCPU(_ grayscale: [UInt8], densityScale: Float) -> [UInt8] {
+    /// Also the print palette's only path. A lookup per grey level, so it's cheap at any size.
+    private static func colorizeOnCPU(
+        _ grayscale: [UInt8], densityScale: Float,
+        colorMap: (CGFloat) -> (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)
+    ) -> [UInt8] {
+        // premultipliedLast is Core Graphics' native compositing format. Premultiplying here
+        // keeps the low-alpha end free from coloured fringes when drawn over the chart grid.
+        let table: [[UInt8]] = (0...255).map { level in
+            let color = colorMap(CGFloat(Float(level) * densityScale))
+            return [UInt8((color.red * color.alpha * 255).rounded()),
+                    UInt8((color.green * color.alpha * 255).rounded()),
+                    UInt8((color.blue * color.alpha * 255).rounded()),
+                    UInt8((color.alpha * 255).rounded())]
+        }
         var rgba = [UInt8](repeating: 0, count: grayscale.count * 4)
         for pixel in grayscale.indices {
-            let color = EnergyColorMap.rgba(at: CGFloat(Float(grayscale[pixel]) * densityScale))
+            let entry = table[Int(grayscale[pixel])]
             let offset = pixel * 4
-            // premultipliedLast is Core Graphics' native compositing format. Premultiplying here
-            // keeps the low-alpha end free from coloured fringes when drawn over the chart grid.
-            rgba[offset] = UInt8((color.red * color.alpha * 255).rounded())
-            rgba[offset + 1] = UInt8((color.green * color.alpha * 255).rounded())
-            rgba[offset + 2] = UInt8((color.blue * color.alpha * 255).rounded())
-            rgba[offset + 3] = UInt8((color.alpha * 255).rounded())
+            rgba[offset] = entry[0]
+            rgba[offset + 1] = entry[1]
+            rgba[offset + 2] = entry[2]
+            rgba[offset + 3] = entry[3]
         }
         return rgba
     }

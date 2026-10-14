@@ -205,7 +205,6 @@ public final class SmithChartView: NSView {
         let gap: CGFloat = 16
         let entries: [(NSColor, Bool, String)] = [
             (Self.traceColor, false, portLabel),
-            (NSColor.systemRed, true, "VSWR margin"),
         ]
         let widths = entries.map { swatchWidth + 4 + ($0.2 as NSString).size(withAttributes: attrs).width }
         var x = bounds.midX - (widths.reduce(0, +) + gap * CGFloat(entries.count - 1)) / 2
